@@ -1,47 +1,60 @@
 import streamlit as st
+import websocket
+import threading
 import json
-import time
-from pathlib import Path
+import requests
 
-# File to store chat messages
-CHAT_FILE = Path("chat_data.json")
+# API and WebSocket URLs
+API_URL = "http://localhost:8000/messages"
+WS_URL = "ws://localhost:8000/ws"
 
-# Initialize the chat file
-if not CHAT_FILE.exists():
-    CHAT_FILE.write_text(json.dumps([]))
+# Initialize chat messages
+messages = []
 
-def load_messages():
-    with CHAT_FILE.open("r") as f:
-        return json.load(f)
+def fetch_messages():
+    """Fetch chat messages from the server."""
+    response = requests.get(API_URL)
+    return response.json()
 
-def save_message(user, message):
-    messages = load_messages()
-    messages.append({"user": user, "message": message})
-    with CHAT_FILE.open("w") as f:
-        json.dump(messages, f)
+def websocket_listener():
+    """Listen for messages from the WebSocket server."""
+    ws = websocket.WebSocket()
+    ws.connect(WS_URL)
+    while True:
+        msg = ws.recv()
+        if msg:  # Check if the message is not empty
+            try:
+                messages.append(json.loads(msg))
+                st.session_state['new_message'] = True  # Trigger Streamlit rerun
+            except json.JSONDecodeError:
+                pass
 
-# Function to display messages
-def display_messages():
-    chat_box = st.empty()
-    with chat_box.container():
-        messages = load_messages()
-        for msg in messages:
-            st.write(f"**{msg['user']}**: {msg['message']}")
+# Start WebSocket listener in a background thread
+if 'ws_thread' not in st.session_state:
+    ws_thread = threading.Thread(target=websocket_listener)
+    ws_thread.daemon = True
+    ws_thread.start()
+    st.session_state['ws_thread'] = ws_thread
 
 # Chat Input
-st.title("Real-time Chat Service")
+st.title("ChatUp")
 user_name = st.text_input("Enter your name:", key="name")
 new_message = st.text_input("Enter your message:", key="message")
 
+# Send message
 if st.button("Send"):
     if user_name and new_message:
-        save_message(user_name, new_message)
-        st.rerun()
+        message = f"{user_name}: {new_message}"
+        ws = websocket.WebSocket()
+        ws.connect(WS_URL)
+        ws.send(message)
+        ws.close()
 
-# Display chat messages in real-time
-display_messages()
+# Display messages
+if 'new_message' in st.session_state and st.session_state['new_message']:
+    st.session_state['new_message'] = False
+    st.experimental_rerun()
 
-# Continuously update the chat display every 2 seconds
-while True:
-    time.sleep(2)
-    st.rerun()
+st.write("**Chat Messages**")
+for msg in fetch_messages():
+    st.write(f"**{msg['user']}**: {msg['message']}")
